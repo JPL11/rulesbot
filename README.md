@@ -2,19 +2,47 @@
 
 > A board game rules assistant — because "just read the rulebook" isn't always helpful at 11pm on game night.
 
-RulesBot answers natural language questions about board game rules using a RAG (Retrieval-Augmented Generation) pipeline. Ask it anything: it retrieves relevant rule passages and generates an answer grounded in the actual text.
+RulesBot answers natural-language questions about board game rules using a RAG (Retrieval-Augmented Generation) pipeline: it retrieves the most relevant rule passages from a vector store and generates an answer grounded strictly in that retrieved text.
 
-**This is a starter repo.** The UI and infrastructure are built. The retrieval and generation pipeline is yours to implement.
+**Status: complete.** All three milestones are implemented, the retrieval evaluation suite passes 18/18, and both optional challenges (ninth rulebook, chunking-extremes experiment) are done. Built for AI201 Lab 1.
+
+---
+
+## How It Works
+
+```
+docs/*.txt ─→ load_documents() ─→ chunk_document() ─→ embed_and_store() ─→ ChromaDB
+                                                                              │
+user query ─→ retrieve() ─→ top-k chunks ─→ generate_response() ─→ grounded answer
+```
+
+| Stage | File | Implementation |
+|---|---|---|
+| **Chunking** | `ingest.py` | 300-character sliding window with 50-character overlap; fragments under 50 characters are dropped. Overlap prevents rules from being split mid-sentence across chunk boundaries. |
+| **Embedding & storage** | `retriever.py` | `all-MiniLM-L6-v2` sentence-transformer embeddings stored in a persistent ChromaDB collection (cosine distance), tagged with the source game. |
+| **Retrieval** | `retriever.py` | Semantic top-k search (`N_RESULTS = 3`), returning `{text, game, distance}` per hit. Typical distances for on-topic queries land around 0.29–0.47 (cosine — lower is more similar). |
+| **Generation** | `generator.py` | Groq `llama-3.3-70b-versatile` chat completion. The system prompt restricts the model to the retrieved chunks and instructs it to say it doesn't know rather than guess — a confident wrong ruling is worse than no ruling. |
+
+### Tech stack
+
+Python 3 · Gradio 5.20 (chat UI) · ChromaDB 1.5 (persistent vector store) · sentence-transformers 3.4 (`all-MiniLM-L6-v2`) · Groq SDK (`llama-3.3-70b-versatile`) · python-dotenv
+
+All tunables (model names, chunk parameters, `N_RESULTS`, paths) live in `config.py`.
+
+---
+
+## Evaluation & Experiments
+
+- **`eval.py`** — retrieval evaluation suite: 18 known question→passage pairs across the rulebooks. The implemented pipeline retrieves the correct passage for **18/18** queries.
+- **`chunking_experiment.py`** — optional challenge: sweeps chunk size to the extremes and compares retrieval quality. Finding: bigger chunks are not better — oversized chunks dilute the embedding and drag in off-topic text, while undersized ones strip context. The 300/50 middle ground won on both retrieval distance and answer quality.
+- **Ninth rulebook** — optional challenge: added `docs/chess.txt` and re-ingested to confirm the pipeline generalizes to a new game with zero code changes.
+- **`planning.md`** — design reflections: chunking-strategy rationale, retrieval observations (distance ranges, failure modes), and response-quality notes.
 
 ---
 
 ## Getting Started
 
-### 1. Fork and clone
-
-Fork this repo, then clone your fork locally.
-
-### 2. Create a virtual environment
+### 1. Clone and create a virtual environment
 
 ```bash
 python -m venv .venv
@@ -22,67 +50,33 @@ source .venv/bin/activate      # Mac/Linux
 # or: .venv\Scripts\activate   # Windows
 ```
 
-### 3. Install dependencies
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> **Note:** `sentence-transformers` will download the embedding model (~80MB) on first run. This only happens once — it's cached locally afterward.
+> **Note:** `sentence-transformers` downloads the embedding model (~80MB) on first run. It's cached locally afterward.
 
-### 4. Add your Groq API key
+### 3. Add your Groq API key
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and replace `your_key_here` with your key from [console.groq.com](https://console.groq.com). No credit card required.
+Open `.env` and replace `your_key_here` with your key from [console.groq.com](https://console.groq.com). No credit card required. (The free tier is rate-limited — expect occasional 429s under heavy testing.)
 
-### 5. Run the app
+### 4. Run the app
 
 ```bash
 python app.py
 ```
 
-RulesBot will start and open in your browser. Before you implement the retrieval pipeline, it will load and display the UI but won't be able to answer questions.
+First launch ingests all rulebooks into `./chroma_db` (skipped on later launches since the collection persists), then opens the chat UI in your browser.
 
----
+### Re-ingesting after chunking changes
 
-## Project Structure
-
-```
-ai201-lab1-rulesbot-starter/
-├── app.py              # Gradio UI and startup logic — fully built
-├── config.py           # Settings (models, paths, retrieval params) — fully built
-├── ingest.py           # Document loading + chunking — TODO: chunk_document()
-├── retriever.py        # Vector store + semantic search — TODO: embed_and_store(), retrieve()
-├── generator.py        # LLM response generation — TODO: generate_response()
-├── docs/               # Board game rule documents (pre-loaded)
-│   ├── catan.txt
-│   ├── clue.txt
-│   ├── codenames.txt
-│   ├── monopoly.txt
-│   ├── pandemic.txt
-│   ├── risk.txt
-│   ├── ticket_to_ride.txt
-│   └── uno.txt
-├── specs/              # Design documents — start here before writing any code
-│   ├── system-design.md         # Complete — read this first
-│   ├── chunk-document-spec.md   # Partial — you complete before Milestone 1
-│   ├── retrieve-spec.md         # Partial — you complete before Milestone 2
-│   └── generate-response-spec.md # Partial — you complete before Milestone 3
-└── planning.md         # Your observations and reflections — fill in as you go
-```
-
-## Where to Start
-
-Before opening any `.py` file, read `specs/system-design.md`. It explains what's built, what's left for you, and why the technical decisions were made. Each milestone then begins by completing the corresponding spec file before writing code — that spec becomes the brief you hand to your AI tool when you're ready to implement.
-
----
-
-## Re-ingesting After Changes
-
-ChromaDB persists to disk in `./chroma_db`. If you change your chunking strategy and want to re-ingest, delete that folder and restart the app:
+ChromaDB persists to disk, so a changed chunking strategy won't take effect until you delete the store:
 
 ```bash
 rm -rf chroma_db/   # Mac/Linux
@@ -92,11 +86,32 @@ python app.py
 
 ---
 
+## Project Structure
+
+```
+ai201-lab1-rulesbot-starter/
+├── app.py                   # Gradio UI and startup/ingestion logic
+├── config.py                # All tunables: models, paths, chunk + retrieval params
+├── ingest.py                # Document loading + sliding-window chunking
+├── retriever.py             # ChromaDB store, embedding, semantic retrieval
+├── generator.py             # Grounded Groq chat completion
+├── eval.py                  # Retrieval evaluation suite (18 known pairs)
+├── chunking_experiment.py   # Chunk-size extremes experiment
+├── planning.md              # Design reflections and observations
+├── docs/                    # Rulebooks (9 games)
+└── specs/                   # Design docs — completed before each milestone
+    ├── system-design.md
+    ├── chunk-document-spec.md
+    ├── retrieve-spec.md
+    └── generate-response-spec.md
+```
+
 ## Rule Books Included
 
 | Game | File |
 |------|------|
 | Catan | `docs/catan.txt` |
+| Chess | `docs/chess.txt` |
 | Clue | `docs/clue.txt` |
 | Codenames | `docs/codenames.txt` |
 | Monopoly | `docs/monopoly.txt` |
